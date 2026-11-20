@@ -335,7 +335,7 @@ coverage-smoke: COV_NEWLIB_TESTS = string.exp
 coverage-smoke: coverage
 
 coverage-report:
-	@echo "$$(ls $(COV_DIR)/raw/*.cov | wc -l | tr -d ' ') runs recorded"
+	@echo "$$(find $(COV_DIR)/raw -name '*.cov' | wc -l | tr -d ' ') runs recorded"
 	$(tcgcov) report --raw-dir $(COV_DIR)/raw --out-dir $(COV_DIR)/report \
 	  --source-root $(COV_ROOT) $(foreach e,$(COV_EXCLUDE),--exclude $(e)) \
 	  --toolchain-prefix $(TOOLBIN)/$(TARGET)- --arch riscv \

@@ -139,20 +139,37 @@ libgcc, newlib and libgloss.
 ## Results
 
 binutils `f50db130cf4`, gcc `4582d80bb1e`, newlib `51fc50b5109`, DejaGnu
-`04e420155f7`, QEMU 10.2.4. The gcc and newlib rows for the full suites
-will come from `make coverage`, which is still running.
+`04e420155f7`, QEMU 10.2.4, 2026-11-20. The gcc and newlib rows come from
+`make coverage`, so every execute test ran with the tcgcov plugin loaded.
 
-| | pass | fail | xfail | untested | unsupported |
-|---|---|---|---|---|---|
-| riscv32 binutils | 279 | 0 | 0 | 0 | 14 |
-| riscv32 gas | 671 | 0 | 23 | 0 | 15 |
-| riscv32 ld | 958 | 221 | 8 | 9 | 304 |
-| riscv64 binutils | 280 | 0 | 0 | 0 | 13 |
-| riscv64 gas | 671 | 0 | 23 | 0 | 19 |
-| riscv64 ld | 1109 | 64 | 10 | 9 | 379 |
-| riscv32, gcc `check-gcc-smoke` | 122 | 0 | 0 | 0 | 0 |
-| riscv64, gcc `check-gcc-smoke` (before the 4 MiB stack declaration) | 106 | 0 | 0 | 0 | 8 |
-| riscv32, newlib `string.exp` | 8 | 0 | 0 | 0 | 0 |
+| | pass | fail | xfail | unresolved | untested | unsupported |
+|---|---|---|---|---|---|---|
+| riscv32 binutils | 279 | 0 | 0 | 0 | 0 | 14 |
+| riscv32 gas | 671 | 0 | 23 | 0 | 0 | 15 |
+| riscv32 ld | 958 | 221 | 8 | 0 | 9 | 304 |
+| riscv32 gcc, all of `execute.exp` | 24652 | 0 | 0 | 0 | 0 | 125 |
+| riscv32 newlib | 31 | 1 | 0 | 0 | 0 | 0 |
+| riscv64 binutils | 280 | 0 | 0 | 0 | 0 | 13 |
+| riscv64 gas | 671 | 0 | 23 | 0 | 0 | 19 |
+| riscv64 ld | 1109 | 64 | 10 | 0 | 9 | 379 |
+| riscv64 gcc, all of `execute.exp` | 24694 | 0 | 0 | 0 | 0 | 104 |
+| riscv64 newlib | 32 | 0 | 0 | 0 | 0 | 0 |
+
+**gcc: no failures on either variant.** Every UNSUPPORTED is the test's
+own requirement: `990413-2.c` is x86 only, `loop-2f.c` and `loop-2g.c` need
+`mmap`, `memclr.c` and `memcpy-a*.c` need `run_expensive_tests`,
+`20030125-1.c` needs `c99_runtime`, `20010122-1.c` and `20030216-1.c` skip
+some `-O` levels, and on riscv32 `pr105613.c` needs `__int128`.
+
+**newlib `tzset.c` (riscv32): a testsuite bug.** The test formats
+`"%lld ... %s"` (`tzset.c:230`, `:232`), and newlib is built without
+`--enable-newlib-io-long-long`, its default, so `_WANT_IO_LONG_LONG` is not
+defined and printf reads `%lld` as one 32-bit argument. On riscv32 the
+`long long` sits in an aligned register pair, so `%s` receives the low
+word of the time value, 1642248000 (`0x61e2b740`), and `strlen` faults on
+it: the board's trap handler reports `mcause=5 mtval=0x61e2b740`. riscv64
+passes because a `long long` is one register there. The test needs a
+guard, or the toolchain needs `--enable-newlib-io-long-long`.
 
 The ld rows are with the board leaving its link flags out of the binutils
 tools' links. Before that change, ld's shared-library, audit and
@@ -174,3 +191,39 @@ failures; the numbers and every test that changed are in its `NOTES.md`.
 It is not in `patches/binutils` yet, so the build does not apply it. The
 remaining failures on both variants are shared-library tests that a
 non-PIC newlib cannot pass, and have not been triaged one by one.
+
+### Coverage
+
+From `make coverage`: 12342 recorded runs on riscv32 and 12363 on riscv64,
+over the libgcc, newlib and libgloss code linked into at least one test.
+
+| | lines | functions | branches |
+|---|---|---|---|
+| riscv32 | 50.4% (3072 of 6090) | 68.0% (289 of 425) | 31.2% (1648 of 5276) |
+| riscv64 | 49.2% (2944 of 5979) | 67.8% (293 of 432) | 31.6% (1640 of 5192) |
+
+By directory (lines):
+
+| | riscv32 | riscv64 |
+|---|---|---|
+| `gcc/libgcc` | 93.5% | 72.4% |
+| `gcc/libgcc/soft-fp` | 82.9% | 91.4% |
+| `newlib/libgloss/riscv` | 80.0% | 80.2% |
+| `newlib/libc/machine` (the RISC-V string routines) | 100.0% | 93.3% |
+| `newlib/libc/time` | 76.5% | 80.5% |
+| `newlib/libc/stdio` | 42.0% | 41.8% |
+| `newlib/libc/stdlib` | 34.9% | 34.8% |
+| `newlib/libc/string` | 33.1% | 33.1% |
+| `newlib/libm/math` | 40.8% | 42.5% |
+| `newlib/libc/signal`, `libm/common` | 0%, 3.9% | 0%, 3.8% |
+
+The full tables are `work*/coverage/report/summary.txt`, and the HTML is
+`work*/coverage/report/html/index.html`. libgcc differs between the two
+because they run different routines. riscv32 calls the 64-bit helpers
+constantly (`__udivmoddi4` 551310 times, `__umoddi3` 481560,
+`__ashldi3` 136890), while riscv64 does 64-bit arithmetic in hardware and
+calls its 128-bit helpers (`__udivmodti4`, `__udivti3`, `__ashlti3`,
+`__lshrti3`, `__ashrti3`) one to four times each, so few of their
+branches are taken. The coverage data takes about
+7 GB per variant, most of it the copies of the test ELFs.
+
