@@ -138,12 +138,42 @@ libgcc, newlib and libgloss.
 
 ## Results
 
-The full runs (`check-binutils`, then `coverage`, for both variants) are in
-progress. So far, on binutils `f50db130cf4`, gcc `4582d80bb1e`, newlib
-`51fc50b5109`, DejaGnu `04e420155f7` and QEMU 10.2.4:
+binutils `f50db130cf4`, gcc `4582d80bb1e`, newlib `51fc50b5109`, DejaGnu
+`04e420155f7`, QEMU 10.2.4. The gcc and newlib rows for the full suites
+will come from `make coverage`, which is still running.
 
-| | riscv32 | riscv64 |
-|---|---|---|
-| gcc, `check-gcc-smoke` (board's old 16 KiB stack declaration) | 106 pass, 8 unsupported (`pr28982b.c`) | 106 pass, 8 unsupported (`pr28982b.c`) |
-| gcc, `check-gcc-smoke` (4 MiB declared) | 122 pass | |
-| newlib, `string.exp` | 8 pass | |
+| | pass | fail | xfail | untested | unsupported |
+|---|---|---|---|---|---|
+| riscv32 binutils | 279 | 0 | 0 | 0 | 14 |
+| riscv32 gas | 671 | 0 | 23 | 0 | 15 |
+| riscv32 ld | 958 | 221 | 8 | 9 | 304 |
+| riscv64 binutils | 280 | 0 | 0 | 0 | 13 |
+| riscv64 gas | 671 | 0 | 23 | 0 | 19 |
+| riscv64 ld | 1109 | 64 (1 unresolved) | 10 | 9 | 379 |
+| riscv32, gcc `check-gcc-smoke` | 122 | 0 | 0 | 0 | 0 |
+| riscv64, gcc `check-gcc-smoke` (before the 4 MiB stack declaration) | 106 | 0 | 0 | 0 | 8 |
+| riscv32, newlib `string.exp` | 8 | 0 | 0 | 0 | 0 |
+
+The ld rows are with the board leaving its link flags out of the binutils
+tools' links. Before that change, ld's shared-library, audit and
+compression tests linked with `mbv-start.o`, the entry point and the text
+address, and riscv64 had 263 failures.
+
+**ld crashes on riscv32.** 181 of the 221 riscv32 ld failures are ld
+dying with SIGSEGV. They are mostly `ld-elf/shared.exp`, which link
+`-shared` against bare-metal (non-PIC) newlib. Errors are expected there,
+but ld crashes after printing them. The smallest case found so far needs
+`crt0.o` and both libraries:
+
+```sh
+echo 'int foo(void){return 1;}' > a.c
+riscv32-unknown-elf-gcc -c a.c
+L=work/install/riscv32-unknown-elf/lib
+work/build/binutils/ld/ld-new -melf32lriscv -shared -o x.so \
+  $L/crt0.o a.o --start-group $L/libc.a $L/libgloss.a --end-group   # SIGSEGV
+```
+
+Without `crt0.o`, or with only one of the libraries, it links. riscv64
+does not crash on the same tests. No backtrace yet. The remaining
+riscv32 failures, and riscv64's 64, are shared-library tests that a
+non-PIC newlib cannot pass, and have not been triaged one by one.

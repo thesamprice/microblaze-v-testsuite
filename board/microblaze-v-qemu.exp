@@ -69,9 +69,18 @@ if { [info exists env(MBV_LIBGLOSS)] && $env(MBV_LIBGLOSS) ne "" } {
     set mbv_libgloss "-B$env(MBV_LIBGLOSS) -L$env(MBV_LIBGLOSS)"
 }
 
-set_board_info ldflags \
-    "[libgloss_link_flags] [newlib_link_flags] $mbv_libgloss --specs=semihost.specs \
-     $mbv_start -Wl,-e,_mbv_start -Wl,-Ttext-segment=0x80000000"
+# Only for programs that are to run on QEMU.  ld's testsuite links with the
+# compiler and the board's ldflags too, and with the startup stub, the entry
+# point and the text address its shared-library, audit and compression tests
+# fail for reasons of this board's making (223 of them on riscv32).  binutils
+# never runs target code, so its tools get the plain toolchain link.
+if { [info exists ::tool] && [lsearch -exact {binutils gas ld} $::tool] >= 0 } {
+    set_board_info ldflags "[libgloss_link_flags] [newlib_link_flags]"
+} else {
+    set_board_info ldflags \
+        "[libgloss_link_flags] [newlib_link_flags] $mbv_libgloss --specs=semihost.specs \
+         $mbv_start -Wl,-e,_mbv_start -Wl,-Ttext-segment=0x80000000"
+}
 set_board_info ldscript ""
 
 # RV32 semihosting cannot return an exit status (libgloss's _exit passes
