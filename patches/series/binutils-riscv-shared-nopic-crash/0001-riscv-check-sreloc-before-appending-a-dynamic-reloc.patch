@@ -1,0 +1,166 @@
+From 4d3a96c9d91596c67d3ffdc6da3da001f31a7d2d Mon Sep 17 00:00:00 2001
+From: Samuel Price <thesamprice@gmail.com>
+Date: Fri, 20 Nov 2026 17:32:40 -0500
+Subject: [PATCH 1/2] riscv: check sreloc before appending a dynamic reloc
+
+riscv_elf_relocate_section copies R_RISCV_32 and R_RISCV_64 into the
+output as dynamic relocs when making a shared object:
+
+	sreloc = elf_section_data (input_section)->sreloc;
+	riscv_elf_append_rela (info->output_bfd, sreloc, &outrel);
+
+riscv_elf_check_relocs creates and sizes that section, but it returns at
+the first reloc it rejects, such as R_RISCV_HI20 in a shared object.
+ld then still relocates the section, so as to report every error
+(lang_check_relocs), and a later R_RISCV_32 or R_RISCV_64 in the same
+section finds sreloc NULL or too small.  riscv_elf_append_rela does not
+check, and ld segfaults.
+
+Linking non-PIC riscv32-unknown-elf newlib with -shared hits this; 181
+of 221 ld testsuite failures on riscv32-unknown-elf were the crash.
+
+Report an error instead, as elf64-x86-64.c and elfnn-aarch64.c do when
+their sreloc is missing.  The two tests put an R_RISCV_HI20 before an
+R_RISCV_32 or R_RISCV_64 in one section.  Without the change ld
+segfaults on both; with it, it reports both errors and exits 1.
+
+bfd/
+	* elfnn-riscv.c (riscv_elf_relocate_section): Report an error
+	rather than append to a dynamic reloc section that
+	riscv_elf_check_relocs did not create or size.
+
+ld/
+	* testsuite/ld-riscv-elf/shared-lib-nopic-05.s: New file.
+	* testsuite/ld-riscv-elf/shared-lib-nopic-05.l: Likewise.
+	* testsuite/ld-riscv-elf/shared-lib-nopic-05.d: New test.
+	* testsuite/ld-riscv-elf/shared-lib-nopic-06.s: New file.
+	* testsuite/ld-riscv-elf/shared-lib-nopic-06.l: Likewise.
+	* testsuite/ld-riscv-elf/shared-lib-nopic-06.d: New test.
+	* testsuite/ld-riscv-elf/ld-riscv-elf.exp: Run them.
+
+Assisted-by: Claude <noreply@anthropic.com>
+---
+ bfd/elfnn-riscv.c                             | 21 +++++++++++++++++++
+ ld/testsuite/ld-riscv-elf/ld-riscv-elf.exp    |  2 ++
+ .../ld-riscv-elf/shared-lib-nopic-05.d        |  4 ++++
+ .../ld-riscv-elf/shared-lib-nopic-05.l        |  2 ++
+ .../ld-riscv-elf/shared-lib-nopic-05.s        |  6 ++++++
+ .../ld-riscv-elf/shared-lib-nopic-06.d        |  4 ++++
+ .../ld-riscv-elf/shared-lib-nopic-06.l        |  2 ++
+ .../ld-riscv-elf/shared-lib-nopic-06.s        |  6 ++++++
+ 8 files changed, 47 insertions(+)
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.d
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.l
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.s
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.d
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.l
+ create mode 100644 ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.s
+
+diff --git a/bfd/elfnn-riscv.c b/bfd/elfnn-riscv.c
+index 78b62e6f..7025248f 100644
+--- a/bfd/elfnn-riscv.c
++++ b/bfd/elfnn-riscv.c
+@@ -3876,6 +3876,27 @@ riscv_elf_relocate_section (struct bfd_link_info *info,
+ 		}
+ 
+ 	      sreloc = elf_section_data (input_section)->sreloc;
++	      /* riscv_elf_check_relocs stops at the first bad reloc in a
++		 section, but ld still relocates the section so as to report
++		 every error (lang_check_relocs).  SRELOC is then missing, or
++		 too small for the relocs after that point.  elf64-x86-64.c
++		 and elfnn-aarch64.c guard their sreloc the same way.  */
++	      if (sreloc == NULL
++		  || sreloc->contents == NULL
++		  || ((sreloc->reloc_count + 1)
++		      * get_elf_backend_data (info->output_bfd)->s->sizeof_rela
++		      > sreloc->size))
++		{
++		  msg = bfd_asprintf (_("%%X%%P: dynamic %s relocation against"
++					" `%s' was not allocated; an earlier"
++					" error in the same section stopped"
++					" relocation scanning\n"),
++				      howto->name,
++				      h != NULL ? h->root.root.string
++				      : "a local symbol");
++		  r = bfd_reloc_notsupported;
++		  break;
++		}
+ 	      riscv_elf_append_rela (info->output_bfd, sreloc, &outrel);
+ 	      if (!relocate)
+ 		continue;
+diff --git a/ld/testsuite/ld-riscv-elf/ld-riscv-elf.exp b/ld/testsuite/ld-riscv-elf/ld-riscv-elf.exp
+index cba0923c..54631f7f 100644
+--- a/ld/testsuite/ld-riscv-elf/ld-riscv-elf.exp
++++ b/ld/testsuite/ld-riscv-elf/ld-riscv-elf.exp
+@@ -255,6 +255,8 @@ if [istarget "riscv*-*-*"] {
+     run_dump_test "shared-lib-nopic-02"
+     run_dump_test "shared-lib-nopic-03"
+     run_dump_test "shared-lib-nopic-04"
++    run_dump_test "shared-lib-nopic-05"
++    run_dump_test "shared-lib-nopic-06"
+ 
+     run_dump_test "data-reloc-rv64-pic"
+     run_dump_test "data-reloc-rv64-pie"
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.d b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.d
+new file mode 100644
+index 00000000..432aee67
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.d
+@@ -0,0 +1,4 @@
++#source: shared-lib-nopic-05.s
++#as: -march=rv32i -mabi=ilp32
++#ld: -m[riscv_choose_ilp32_emul] -shared
++#error_output: shared-lib-nopic-05.l
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.l b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.l
+new file mode 100644
+index 00000000..5b3ef2f1
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.l
+@@ -0,0 +1,2 @@
++.*: tmpdir/shared-lib-nopic-05.o: relocation R_RISCV_HI20 against `foo' can not be used when making a shared object; recompile with -fPIC
++.*: dynamic R_RISCV_32 relocation against `foo' was not allocated; an earlier error in the same section stopped relocation scanning
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.s b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.s
+new file mode 100644
+index 00000000..f8f42afc
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-05.s
+@@ -0,0 +1,6 @@
++	.option nopic
++	.text
++	.globl	foo
++foo:
++	lui	a0, %hi(foo)
++	.word	foo
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.d b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.d
+new file mode 100644
+index 00000000..33985c84
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.d
+@@ -0,0 +1,4 @@
++#source: shared-lib-nopic-06.s
++#as: -march=rv64i -mabi=lp64
++#ld: -m[riscv_choose_lp64_emul] -shared
++#error_output: shared-lib-nopic-06.l
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.l b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.l
+new file mode 100644
+index 00000000..5e82ccd7
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.l
+@@ -0,0 +1,2 @@
++.*: tmpdir/shared-lib-nopic-06.o: relocation R_RISCV_HI20 against `foo' can not be used when making a shared object; recompile with -fPIC
++.*: dynamic R_RISCV_64 relocation against `foo' was not allocated; an earlier error in the same section stopped relocation scanning
+diff --git a/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.s b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.s
+new file mode 100644
+index 00000000..616bd0d8
+--- /dev/null
++++ b/ld/testsuite/ld-riscv-elf/shared-lib-nopic-06.s
+@@ -0,0 +1,6 @@
++	.option nopic
++	.text
++	.globl	foo
++foo:
++	lui	a0, %hi(foo)
++	.dword	foo
+-- 
+2.39.5 (Apple Git-154)
+

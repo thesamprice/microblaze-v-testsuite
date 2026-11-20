@@ -1,0 +1,50 @@
+From 4bd22b4da4b47432b732f2005ca75c1cefdab89e Mon Sep 17 00:00:00 2001
+From: Samuel Price <thesamprice@gmail.com>
+Date: Fri, 20 Nov 2026 17:32:40 -0500
+Subject: [PATCH 2/2] ld: testsuite: skip pr19719 runs without the libraries
+
+mix_pic_and_non_pic in ld-elf/shared.exp builds libpr19719a.so and
+libpr19719b.so, then copies them with
+
+	exec cp tmpdir/libpr19719b.so tmpdir/libpr19719.so
+
+When either link fails, the copy raises a Tcl error, which aborts the
+rest of shared.exp and reports it as one UNRESOLVED testcase.  On
+riscv32-unknown-elf, where -shared links against a non-PIC newlib, the
+links fail and nothing after this point in shared.exp runs.
+
+Report the two run tests unresolved and return when a library is
+missing.
+
+ld/
+	* testsuite/ld-elf/shared.exp (mix_pic_and_non_pic): Report the run
+	tests unresolved when a library was not built.
+
+Assisted-by: Claude <noreply@anthropic.com>
+---
+ ld/testsuite/ld-elf/shared.exp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/ld/testsuite/ld-elf/shared.exp b/ld/testsuite/ld-elf/shared.exp
+index 8ef83c31..80cc994b 100644
+--- a/ld/testsuite/ld-elf/shared.exp
++++ b/ld/testsuite/ld-elf/shared.exp
+@@ -1709,6 +1709,15 @@ proc mix_pic_and_non_pic {xfails cflags ldflags exe} {
+ 	] \
+     ]
+ 
++    # A failed build above leaves no library to copy, and the exec would
++    # abort the rest of this file.
++    if { ![file exists tmpdir/libpr19719a.so]
++	 || ![file exists tmpdir/libpr19719b.so] } {
++	unresolved "Run $exe fun undefined"
++	unresolved "Run $exe fun defined"
++	return
++    }
++
+     send_log "cp tmpdir/libpr19719b.so tmpdir/libpr19719.so\n"
+     exec cp tmpdir/libpr19719b.so tmpdir/libpr19719.so
+ 
+-- 
+2.39.5 (Apple Git-154)
+

@@ -149,7 +149,7 @@ will come from `make coverage`, which is still running.
 | riscv32 ld | 958 | 221 | 8 | 9 | 304 |
 | riscv64 binutils | 280 | 0 | 0 | 0 | 13 |
 | riscv64 gas | 671 | 0 | 23 | 0 | 19 |
-| riscv64 ld | 1109 | 64 (1 unresolved) | 10 | 9 | 379 |
+| riscv64 ld | 1109 | 64 | 10 | 9 | 379 |
 | riscv32, gcc `check-gcc-smoke` | 122 | 0 | 0 | 0 | 0 |
 | riscv64, gcc `check-gcc-smoke` (before the 4 MiB stack declaration) | 106 | 0 | 0 | 0 | 8 |
 | riscv32, newlib `string.exp` | 8 | 0 | 0 | 0 | 0 |
@@ -159,21 +159,18 @@ tools' links. Before that change, ld's shared-library, audit and
 compression tests linked with `mbv-start.o`, the entry point and the text
 address, and riscv64 had 263 failures.
 
-**ld crashes on riscv32.** 181 of the 221 riscv32 ld failures are ld
-dying with SIGSEGV. They are mostly `ld-elf/shared.exp`, which link
-`-shared` against bare-metal (non-PIC) newlib. Errors are expected there,
-but ld crashes after printing them. The smallest case found so far needs
-`crt0.o` and both libraries:
-
-```sh
-echo 'int foo(void){return 1;}' > a.c
-riscv32-unknown-elf-gcc -c a.c
-L=work/install/riscv32-unknown-elf/lib
-work/build/binutils/ld/ld-new -melf32lriscv -shared -o x.so \
-  $L/crt0.o a.o --start-group $L/libc.a $L/libgloss.a --end-group   # SIGSEGV
-```
-
-Without `crt0.o`, or with only one of the libraries, it links. riscv64
-does not crash on the same tests. No backtrace yet. The remaining
-riscv32 failures, and riscv64's 64, are shared-library tests that a
+**ld crashed on riscv32.** 181 of the 221 riscv32 ld failures were ld
+dying with SIGSEGV, mostly in `ld-elf/shared.exp`, which links `-shared`
+against bare-metal (non-PIC) newlib. `riscv_elf_check_relocs` stops at the
+first `R_RISCV_HI20` it rejects, so a later `R_RISCV_32` in the same
+section gets no dynamic reloc section. ld still relocates the section in
+order to report every error, and `riscv_elf_relocate_section` appends
+through the NULL pointer. riscv64 newlib (medany) has no `HI20`, but a
+`.dword` after an `HI20` crashes rv64 the same way.
+[`patches/series/binutils-riscv-shared-nopic-crash`](patches/series/binutils-riscv-shared-nopic-crash)
+has the fix, two tests, and a guard for a `shared.exp` procedure that
+aborted once the crash was gone. With it, riscv32 ld has no SIGSEGV and 220
+failures; the numbers and every test that changed are in its `NOTES.md`.
+It is not in `patches/binutils` yet, so the build does not apply it. The
+remaining failures on both variants are shared-library tests that a
 non-PIC newlib cannot pass, and have not been triaged one by one.
