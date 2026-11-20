@@ -1,0 +1,91 @@
+# DejaGnu board: AMD MicroBlaze V (RISC-V) bare metal under QEMU system
+# emulation, machine amd-microblaze-v-generic.
+#
+#   runtest --tool gcc --target_board=microblaze-v-qemu ...
+#
+# Shaped like DejaGnu's own *-sim boards, riscv-sim.exp among them: the crt0,
+# the C library and the syscall layer are the toolchain's (libgloss and
+# newlib).  This board adds what QEMU needs that a simulator does not:
+#
+#   - semihosting for I/O and exit, through libgloss's semihost.specs;
+#   - mbv-start.o, a reset stub that sets sp, turns on the FPU and installs a
+#     trap handler before libgloss's _start (see mbv-start.S);
+#   - text at the machine's RAM, 0x80000000, instead of the default 0x10000,
+#     which on this machine is in the 128 KiB of LMB BRAM;
+#   - the runner, microblaze-v-qemu-run, which starts QEMU with the generic
+#     loader and kills it if it hangs.
+#
+# It lives outside DejaGnu: the Makefile's site file adds this directory to
+# boards_dir, so stock DejaGnu works.
+#
+# Environment:
+#   MBV_QEMU     qemu-system-riscv32 or -riscv64 (read by the runner)
+#   MBV_START    the mbv-start.o built for the target (required)
+#   MBV_LIBGLOSS the directory holding the installed semihost.specs
+#   MBV_TIMEOUT  seconds per test (default 90)
+
+load_generic_config "sim"
+load_base_board_description "basic-sim"
+process_multilib_options ""
+
+# setup_sim is not called: it would look for a gdb simulator in the build
+# tree.  QEMU is the point, since it implements the MicroBlaze V machine.
+
+if { ![info exists env(MBV_TIMEOUT)] } { set ::env(MBV_TIMEOUT) 90 }
+
+# A bare name: DejaGnu's "which" check does not survive a command line.  $SIM
+# overrides, as for mmixware-sim.exp.
+if { [info exists SIM] } {
+    set_board_info sim $SIM
+} else {
+    set_board_info sim "microblaze-v-qemu-run"
+}
+
+# The runner gives up after MBV_TIMEOUT; DejaGnu must wait longer than that,
+# or it kills the runner and leaves QEMU behind.
+set_board_info sim_time_limit [expr {$::env(MBV_TIMEOUT) + 30}]
+
+# As in the MicroBlaze board: with an installed compiler there is no build
+# tree for find_gcc to find, and the same string compiles testglue.c.
+if { [info exists ::GCC_UNDER_TEST] } {
+    set_board_info compiler "$::GCC_UNDER_TEST"
+} else {
+    set_board_info compiler "[find_gcc]"
+}
+
+set_board_info cflags "[libgloss_include_flags] [newlib_include_flags]"
+
+if { ![info exists env(MBV_START)] } {
+    perror "microblaze-v-qemu: set MBV_START to the mbv-start.o for this target"
+}
+set mbv_start $env(MBV_START)
+
+# Where the toolchain installed libgloss: semihost.specs and libsemihost.a.
+# GCC's testsuite finds them in the build tree through libgloss_link_flags,
+# but newlib's testsuite gives the compiler only newlib's build directory, so
+# the specs file is not found.  MBV_LIBGLOSS is searched after both.
+set mbv_libgloss ""
+if { [info exists env(MBV_LIBGLOSS)] && $env(MBV_LIBGLOSS) ne "" } {
+    set mbv_libgloss "-B$env(MBV_LIBGLOSS) -L$env(MBV_LIBGLOSS)"
+}
+
+set_board_info ldflags \
+    "[libgloss_link_flags] [newlib_link_flags] $mbv_libgloss --specs=semihost.specs \
+     $mbv_start -Wl,-e,_mbv_start -Wl,-Ttext-segment=0x80000000"
+set_board_info ldscript ""
+
+# RV32 semihosting cannot return an exit status (libgloss's _exit passes
+# only ADP_Stopped_ApplicationExit), so the status comes from testglue.c's
+# "*** EXIT code N" line, written through semihosting.  1, not 0: see the
+# MicroBlaze board for why a literal 0 reads as set.
+set_board_info needs_status_wrapper 1
+
+# Bare metal: no OS services.
+set_board_info noargs 1
+set_board_info gdb,nosignals 1
+set_board_info gdb,noinferiorio 1
+set_board_info gdb,no_hardware_watchpoints 1
+# The stack is the top of MBV_RAM_MB (128 MiB) with the heap growing up
+# from _end; 4 MiB is a safe floor to declare, and lets pr28982b.c run.
+set_board_info gcc,stack_size 4194304
+set_board_info gcc,timeout 600

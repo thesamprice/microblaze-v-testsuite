@@ -1,0 +1,30 @@
+#!/bin/sh
+# Stand-in for qemu-system-riscv32/64 that records tcgcov coverage of every
+# run.  "make coverage" points MBV_QEMU at it.  It passes its arguments to
+# the real QEMU and adds the tcgcov plugin, with the ELF that the generic
+# loader's file= argument names.
+#
+#   MBVCOV_QEMU    the real qemu-system-riscv32/64
+#   MBVCOV_PLUGIN  libtcgcov built against that QEMU's qemu-plugin.h
+#   MBVCOV_DIR     where the artifacts go
+#
+# DejaGnu deletes each test binary after the run, and the host tools need
+# the ELF later, so the ELF is copied beside its artifact.  Names carry the
+# PID because every optimization level reuses the same executable name.
+: "${MBVCOV_QEMU:?}" "${MBVCOV_PLUGIN:?}" "${MBVCOV_DIR:?}"
+
+prog=
+for a in "$@"; do
+  case $a in
+    loader,file=*) prog=${a#loader,file=}; prog=${prog%%,*} ;;
+  esac
+done
+
+if [ -n "$prog" ] && [ -f "$prog" ]; then
+  base=$(basename "$prog" | sed 's/\.[^.]*$//')-$$
+  mkdir -p "$MBVCOV_DIR"
+  cp "$prog" "$MBVCOV_DIR/$base.elf"
+  exec "$MBVCOV_QEMU" "$@" \
+    -plugin "$MBVCOV_PLUGIN,out=$MBVCOV_DIR/$base.cov,elf=$MBVCOV_DIR/$base.elf"
+fi
+exec "$MBVCOV_QEMU" "$@"

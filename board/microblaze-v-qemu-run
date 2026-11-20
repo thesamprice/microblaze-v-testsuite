@@ -1,0 +1,45 @@
+#!/bin/sh
+# microblaze-v-qemu-run <program.elf>: run a bare-metal test on QEMU's
+# amd-microblaze-v-generic machine, the way DejaGnu runs a simulator.
+#
+#   MBV_QEMU     qemu-system-riscv32 or -riscv64                (required)
+#   MBV_RAM_MB   RAM at 0x80000000, in MiB                      (default 128)
+#   MBV_TIMEOUT  seconds before QEMU is killed as hung          (default 90)
+#   MBV_CPU      a -cpu value; leave unset for the machine's default
+#
+# The program talks to the host through semihosting: libgloss's
+# semihost.specs routes write() and exit() to it, and QEMU exits when the
+# program does.  The board sets needs_status_wrapper, so the test's status
+# comes from testglue.c's "*** EXIT code N" line.  That is needed because
+# on RV32 libgloss's _exit cannot pass a status to semihosting, so QEMU
+# exits 0 whatever the program returned.  This script's own exit status
+# does not decide pass or fail.
+#
+# The machine does not load -kernel itself.  The generic loader puts the
+# ELF in memory and sets the PC to its entry point, which the board makes
+# mbv-start.S's _mbv_start.
+: "${MBV_QEMU:?set MBV_QEMU to qemu-system-riscv32 or -riscv64}"
+prog=$1
+[ -n "$prog" ] || { echo "usage: microblaze-v-qemu-run <program.elf>" >&2; exit 2; }
+[ -f "$prog" ] || { echo "microblaze-v-qemu-run: no such file: $prog" >&2; exit 2; }
+
+"$MBV_QEMU" -M amd-microblaze-v-generic ${MBV_CPU:+-cpu "$MBV_CPU"} \
+  -m "${MBV_RAM_MB:-128}M" -display none -serial null -monitor none \
+  -semihosting-config enable=on,target=native \
+  -device loader,file="$prog",cpu-num=0 &
+qpid=$!
+
+# Poll rather than timeout(1), which macOS does not have.  A background
+# "sleep N; kill" would hold DejaGnu's output pipe open for N seconds.
+limit=$(( ${MBV_TIMEOUT:-90} * 10 ))
+i=0
+while kill -0 "$qpid" 2>/dev/null; do
+  if [ "$i" -ge "$limit" ]; then
+    kill "$qpid" 2>/dev/null
+    echo "microblaze-v-qemu-run: killed after ${MBV_TIMEOUT:-90} s" >&2
+    break
+  fi
+  sleep 0.1
+  i=$((i + 1))
+done
+wait "$qpid"
